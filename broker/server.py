@@ -20,6 +20,7 @@ import contextlib
 import logging
 
 from broker.protocol import ConnectionClosedError, encode_frame, read_frame
+from broker.storage import LogStore
 from broker.topics import TopicRegistry
 
 logger = logging.getLogger("broker.server")
@@ -69,9 +70,13 @@ async def _handle_frame(
         if not topic:
             await outbound.put({"type": "ERROR", "reason": "SUBSCRIBE requires a topic"})
             return
+        # subscribe() then replay() with no `await` between them is
+        # deliberate -- see TopicRegistry.replay() for why that ordering
+        # is what makes this race-free against a concurrent PUBLISH.
         registry.subscribe(topic, outbound)
+        replayed = registry.replay(topic, outbound)
         subscribed_topics.add(topic)
-        logger.info("%s SUBSCRIBE topic=%s", peer, topic)
+        logger.info("%s SUBSCRIBE topic=%s replayed=%d", peer, topic, replayed)
 
     else:
         await outbound.put({"type": "ERROR", "reason": f"unknown message type: {msg_type!r}"})
@@ -119,7 +124,8 @@ async def run_server(host: str = "127.0.0.1", port: int = 8765, registry: TopicR
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    server = await run_server()
+    registry = TopicRegistry(store=LogStore("data"))
+    server = await run_server(registry=registry)
     async with server:
         await server.serve_forever()
 
