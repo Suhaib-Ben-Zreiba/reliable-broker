@@ -78,12 +78,27 @@ In-memory publish/subscribe fan-out:
   Enforcing role-appropriate behavior is deferred until there's an actual
   reason to (e.g. authentication, or producer/consumer-specific limits),
   rather than added speculatively now.
-- Publishing to a topic with zero current subscribers is a no-op: the
-  message is dropped, not queued for someone who subscribes later. There is
-  no persistence yet -- that's Milestone 3.
 - `message_id` is assigned by the broker (not the publisher) so every
   delivered copy of a message can be referred to unambiguously once
   Milestone 4 adds per-subscriber acknowledgement.
+
+## What Milestone 3 actually implements
+
+Durable, replayable topics:
+
+- Every `PUBLISH` is appended to that topic's on-disk log before being
+  fanned out to any live subscriber, so a message survives even if the
+  broker crashes immediately after accepting it.
+- Every `SUBSCRIBE` now replays the topic's full history to the new
+  subscriber before it starts receiving live messages -- the exact gap
+  Milestone 2 left open (publishing to a topic with no current subscribers
+  used to drop the message forever) is closed.
+- A restarted broker resumes message id assignment after whatever was
+  already on disk, so ids never collide across a restart.
+- There is still no acknowledgement and no notion of "resume from where I
+  left off" -- every SUBSCRIBE replays from the very beginning of the
+  topic's history, every time. Per-subscriber offsets are Milestone 4/5
+  territory, not this one.
 
 ## What Milestone 1 implemented
 

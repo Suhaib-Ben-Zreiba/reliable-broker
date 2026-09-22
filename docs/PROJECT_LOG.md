@@ -120,3 +120,70 @@ gap is documented rather than silently assumed away.
 - No acknowledgement, no redelivery, no at-least-once guarantee of any
   kind yet. Milestone 4.
 - Still not deployed. Still nothing worth deploying yet.
+
+## Milestone 3: persistent per-topic append-only log
+
+**Decision: JSONL files, one per topic, not SQLite.** The access pattern is
+purely sequential append + sequential full read, which is exactly what a
+flat file is good at without adding a real dependency. If a later milestone
+needs random access (resume from a specific offset without scanning from
+the start), that becomes a concrete reason to revisit this -- not a
+speculative upgrade made now. Full reasoning in `broker/storage.py`.
+
+**The actual bug this milestone fixes, precisely stated:** in Milestone 2,
+`registry.publish("orders", body)` with zero current subscribers silently
+dropped the message. There was no error, no warning, nothing -- it just
+vanished. `test_publish_with_no_subscribers_is_still_persisted` and
+`test_new_subscriber_receives_messages_published_before_it_subscribed`
+exist specifically to pin down that this no longer happens.
+
+**Decision: replay must be synchronous, with zero `await` between
+`subscribe()` and `replay()`.** This asyncio broker is single-threaded and
+cooperative: a coroutine only yields control at an `await`. So if
+"register this subscriber" and "hand it everything published before now"
+happen with no `await` in between, no other coroutine can run a `PUBLISH`
+in that window, and the two operations are atomic for free -- no lock
+needed. Using async file I/O here (e.g. `aiofiles`) would have reintroduced
+exactly the race it's meant to avoid: a `PUBLISH` landing in the gap could
+be missed by both the live-fanout path and a since-stale history read.
+This is a direct, deliberate consequence of choosing `asyncio` in
+Milestone 1 -- worth being able to explain that connection in an interview.
+
+**Decision: message ids must resume correctly after a restart.** A naive
+implementation resets `itertools.count(1)` on every process start, which
+would mean the *second* message published after any restart reuses an id
+already sitting in yesterday's log. `LogStore.max_message_id_seen()` scans
+every topic's log at startup and `TopicRegistry` resumes counting after
+whatever it finds.
+`test_registry_survives_simulated_restart` and
+`test_broker_restart_does_not_lose_messages` (the latter stops and starts
+a real server over real sockets, not just in-memory objects) both check
+this directly, not just "does replay return something."
+
+**Small security decision, easy to miss:** a topic name is client-supplied
+data, and I'm using it to build a filename. Without `_safe_filename()`, a
+client publishing to a topic named `"../../etc/passwd"` could make the
+broker read or write outside its data directory.
+`test_topic_name_cannot_escape_the_data_directory` exists because this
+class of bug is exactly the kind that's obvious once pointed out and easy
+to never think of otherwise.
+
+**What's tested (31 tests total, 13 new this milestone):** persistence
+round-trips, cross-topic isolation on disk, restart survival at both the
+storage layer and the full registry layer, message-id continuation across
+restart, the path-traversal guard, and -- the one that actually matters
+most -- a real server process being stopped and a new one started against
+the same data directory, over real sockets, with a subscriber still
+receiving what was published before the "restart."
+
+**What's explicitly NOT done yet:**
+- No acknowledgement. A consumer can't tell the broker "I've processed
+  this," and the broker has no notion of redelivering something that
+  wasn't acknowledged. Milestone 4.
+- No per-subscriber offset. Every SUBSCRIBE replays the *entire* history
+  of a topic, every time, even for a consumer that already saw all of it
+  five seconds ago. This is fine for now and would be wasteful at scale --
+  exactly the kind of thing Milestone 4/5's ack tracking is meant to fix
+  by letting a consumer resume from its own last-acknowledged point instead
+  of from zero.
+- Still not deployed.
