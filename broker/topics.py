@@ -1,18 +1,10 @@
-"""In-memory topic registry: tracks subscribers and fans out published
-messages to them.
+"""In-memory subscriber tracking plus durable fan-out, backed by storage.py.
 
-Deliberately has no dependency on sockets, asyncio streams, or the wire
-protocol -- a subscriber is represented by an asyncio.Queue that the
-connection layer drains and writes to the network. That separation is what
-lets fan-out logic be unit tested without opening a single socket, the same
-way protocol.py is tested independently of server.py.
-
-No persistence at this milestone: publishing to a topic with no current
-subscribers simply drops the message. A subscriber that connects after a
-message was published never sees it. That gap is intentional and is what
-Milestone 3's persistent log exists to close -- fixing it here would mean
-building persistence and fan-out at the same time, which makes both harder
-to get right and harder to test in isolation.
+Deliberately has no dependency on sockets or asyncio streams -- a
+subscriber is represented by an asyncio.Queue that the connection layer
+drains and writes to the network. That separation is what lets fan-out and
+replay logic be unit tested without opening a single socket, the same way
+protocol.py is tested independently of server.py.
 """
 
 from __future__ import annotations
@@ -20,14 +12,38 @@ from __future__ import annotations
 import asyncio
 import itertools
 
+from broker.storage import LogStore
+
 
 class TopicRegistry:
-    def __init__(self) -> None:
+    def __init__(self, store: LogStore | None = None) -> None:
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
-        self._message_ids = itertools.count(1)
+        self._store = store
+        start = (store.max_message_id_seen() + 1) if store is not None else 1
+        self._message_ids = itertools.count(start)
 
     def subscribe(self, topic: str, queue: asyncio.Queue) -> None:
         self._subscribers.setdefault(topic, set()).add(queue)
+
+    def replay(self, topic: str, queue: asyncio.Queue) -> int:
+        """Push every historical message for topic onto queue.
+
+        Deliberately synchronous (no `await` anywhere in this call): the
+        server calls subscribe() immediately followed by replay() with no
+        `await` between them, which makes "start receiving live messages"
+        and "receive everything published before I subscribed" atomic with
+        respect to other connections. If this used async file I/O, a
+        PUBLISH from another connection could land in the gap and either
+        be missed or be delivered twice (once live, once in a
+        since-updated history read). See docs/PROJECT_LOG.md for the full
+        reasoning.
+        """
+        if self._store is None:
+            return 0
+        records = self._store.read_all(topic)
+        for record in records:
+            queue.put_nowait(record)
+        return len(records)
 
     def unsubscribe(self, topic: str, queue: asyncio.Queue) -> None:
         subscribers = self._subscribers.get(topic)
@@ -35,9 +51,6 @@ class TopicRegistry:
             subscribers.discard(queue)
 
     def unsubscribe_all(self, queue: asyncio.Queue) -> None:
-        """Remove a queue from every topic it was subscribed to. Called when
-        a connection closes, so a dead connection's queue doesn't keep
-        being handed messages that will never be read."""
         for subscribers in self._subscribers.values():
             subscribers.discard(queue)
 
@@ -45,23 +58,26 @@ class TopicRegistry:
         return len(self._subscribers.get(topic, ()))
 
     async def publish(self, topic: str, body) -> int:
-        """Deliver a message to every current subscriber of topic.
+        """Persist the message durably, then fan it out to current live
+        subscribers.
 
-        Returns the number of subscribers the message was delivered to
-        (0 if the topic has none right now). Each subscriber gets its own
-        message dict with a unique, broker-assigned message_id -- shared
-        mutable state across subscribers would be a bug waiting to happen
-        once Milestone 4 adds per-subscriber ack tracking keyed by this id.
+        Persistence happens first and can raise (disk full, permission
+        error) before any subscriber is touched, so a failed publish never
+        partially delivers. Still declared `async def` for API stability
+        (a future storage backend might need real async I/O), but nothing
+        in this implementation currently awaits, which is exactly what
+        keeps it safe to call from within replay()'s atomic window.
         """
+        message = {
+            "type": "MESSAGE",
+            "topic": topic,
+            "message_id": f"m-{next(self._message_ids)}",
+            "body": body,
+        }
+        if self._store is not None:
+            self._store.append(topic, message)
+
         subscribers = self._subscribers.get(topic, ())
-        delivered = 0
         for queue in subscribers:
-            message = {
-                "type": "MESSAGE",
-                "topic": topic,
-                "message_id": f"m-{next(self._message_ids)}",
-                "body": body,
-            }
-            await queue.put(message)
-            delivered += 1
-        return delivered
+            queue.put_nowait(message)
+        return len(subscribers)
