@@ -129,3 +129,65 @@ async def test_forget_queue_only_affects_that_queue():
 
     assert queue_a.qsize() == 0
     assert queue_b.qsize() == 1
+
+
+# --- reassign(): the actual point of Milestone 5's reconnect handling --
+
+
+def test_reassign_with_nothing_pending_is_a_noop():
+    tracker = AckTracker(timeout=TIMEOUT)
+    old_queue: asyncio.Queue = asyncio.Queue()
+    new_queue: asyncio.Queue = asyncio.Queue()
+
+    moved = tracker.reassign(old_queue, new_queue)
+
+    assert moved == 0
+    assert new_queue.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_reassign_redelivers_immediately_to_new_queue():
+    tracker = AckTracker(timeout=TIMEOUT)
+    old_queue: asyncio.Queue = asyncio.Queue()
+    new_queue: asyncio.Queue = asyncio.Queue()
+    message = {"message_id": "m-1", "body": {"id": 1}}
+    tracker.record_delivery(old_queue, message)
+
+    moved = tracker.reassign(old_queue, new_queue)
+
+    assert moved == 1
+    assert new_queue.get_nowait() == message
+    assert old_queue.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_reassign_cancels_the_old_queues_timer():
+    tracker = AckTracker(timeout=TIMEOUT)
+    old_queue: asyncio.Queue = asyncio.Queue()
+    new_queue: asyncio.Queue = asyncio.Queue()
+    tracker.record_delivery(old_queue, {"message_id": "m-1", "body": {}})
+
+    tracker.reassign(old_queue, new_queue)
+    new_queue.get_nowait()  # drain the immediate redelivery from reassign itself
+
+    await asyncio.sleep(PAST_TIMEOUT)
+
+    # The message keeps retrying, but only on new_queue -- old_queue must
+    # never receive anything again once it's been reassigned away from.
+    assert old_queue.qsize() == 0
+    assert new_queue.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_reassign_moves_multiple_pending_messages():
+    tracker = AckTracker(timeout=TIMEOUT)
+    old_queue: asyncio.Queue = asyncio.Queue()
+    new_queue: asyncio.Queue = asyncio.Queue()
+    tracker.record_delivery(old_queue, {"message_id": "m-1", "body": {}})
+    tracker.record_delivery(old_queue, {"message_id": "m-2", "body": {}})
+
+    moved = tracker.reassign(old_queue, new_queue)
+
+    assert moved == 2
+    ids = {new_queue.get_nowait()["message_id"] for _ in range(2)}
+    assert ids == {"m-1", "m-2"}
