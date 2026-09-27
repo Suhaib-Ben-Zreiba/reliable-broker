@@ -42,8 +42,16 @@ class TopicRegistry:
         self._groups: dict[tuple[str, str], list[asyncio.Queue]] = {}
         self._group_next_index: dict[tuple[str, str], int] = {}
         self._consumer_queues: dict[str, asyncio.Queue] = {}
+        self._publish_counts: dict[str, int] = {}
         self._store = store
         self.ack_tracker = ack_tracker
+        # Public, and incremented/decremented directly by server.py around
+        # each connection's lifetime -- simplest way to expose a live
+        # connection count for metrics.py without a separate component.
+        # If this registry keeps accumulating unrelated bookkeeping
+        # responsibilities, that's a signal to split metrics-tracking into
+        # its own class; not done speculatively now.
+        self.active_connections = 0
         start = (store.max_message_id_seen() + 1) if store is not None else 1
         self._message_ids = itertools.count(start)
 
@@ -137,6 +145,29 @@ class TopicRegistry:
     def group_member_count(self, topic: str, group_id: str) -> int:
         return len(self._groups.get((topic, group_id), ()))
 
+    def known_topics(self) -> set[str]:
+        """Every topic with a current subscriber, a current group, or at
+        least one publish in this process's lifetime. Not the same as
+        "every topic ever published to across all of history" -- that
+        would require listing the store's directory, which is a
+        reasonable future addition but isn't needed for a live metrics
+        view of what the broker is doing right now."""
+        return (
+            set(self._subscribers)
+            | {topic for (topic, _group_id) in self._groups}
+            | set(self._publish_counts)
+        )
+
+    def publish_count(self, topic: str) -> int:
+        return self._publish_counts.get(topic, 0)
+
+    def groups_for_topic(self, topic: str) -> dict[str, int]:
+        return {
+            group_id: len(members)
+            for (t, group_id), members in self._groups.items()
+            if t == topic
+        }
+
     async def publish(self, topic: str, body) -> int:
         """Persist the message durably, then fan it out: every broadcast
         subscriber gets a copy, and each consumer group subscribed to this
@@ -158,6 +189,7 @@ class TopicRegistry:
         }
         if self._store is not None:
             self._store.append(topic, message)
+        self._publish_counts[topic] = self._publish_counts.get(topic, 0) + 1
 
         delivered = 0
 
