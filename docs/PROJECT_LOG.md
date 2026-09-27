@@ -353,3 +353,70 @@ published messages with no overlap.
   retry count or a TTL on abandoned consumer state; noted here rather than
   built speculatively.
 - Still not deployed.
+
+## Milestone 6: metrics endpoint and dashboard
+
+**Decision: a hand-rolled HTTP server, not a framework.** The whole point
+of this project is implementing real mechanics instead of wrapping
+something that already does it, and the metrics endpoint only ever needs
+to answer two fixed routes: `GET /metrics` and `GET /`. That doesn't
+justify pulling in `aiohttp` or similar for routing and middleware it
+won't use. `broker/metrics.py`'s `_handle_http_connection()` reads a
+request line and headers off a raw `asyncio.StreamReader` and writes a
+response by hand -- no keep-alive, no chunked encoding, no request
+bodies. That's a deliberate scope limit stated in the module docstring,
+not an oversight.
+
+**Decision: a second server on a second port, not a new command on the
+existing wire protocol.** `PROTOCOL.md` documents the broker's own
+length-prefixed framing protocol; HTTP is a different protocol serving a
+different audience (a browser or `curl`, not a broker client), so it gets
+its own `asyncio.start_server` and its own port (`run_metrics_server`)
+rather than a `METRICS` message type bolted onto `protocol.py`. `main()`
+now runs both servers concurrently with `asyncio.gather()` -- safe here,
+unlike the reader/writer loops in `server.py`, because neither
+`serve_forever()` call is expected to raise or finish first under normal
+operation, so the gather-doesn't-cancel-siblings problem from Milestone 2
+doesn't apply.
+
+**Decision: `build_snapshot()` is a pure function over
+`TopicRegistry`'s own bookkeeping.** It takes a registry and returns a
+plain dict, with no `asyncio`, no sockets, no HTTP -- the same isolation
+pattern as `topics.py` itself. That let `tests/test_metrics.py` unit-test
+every case (empty registry, publish counts, group membership, pending
+acks, connected clients) without opening a single connection, and kept
+the HTTP layer in `_handle_http_connection()` responsible for nothing
+more than calling it and serializing the result.
+
+**Decision: `active_connections` is a plain public counter on
+`TopicRegistry`, not a new component.** The registry already owns the
+bookkeeping every other metric reads from (`_publish_counts`,
+`_subscribers`, `_groups`), so a connected-client count belongs there too
+rather than in a separate tracker that would need its own wiring.
+`handle_connection()` in `server.py` increments it right after a
+connection opens and decrements it in the same cleanup block that already
+runs `unsubscribe_all()`, so the count can't drift out of sync with
+connections that actually closed.
+
+**What's tested (68 tests total, 9 new this milestone):** `build_snapshot()`
+unit tests for an empty registry, publish/subscriber counts, group
+membership, and pending-ack/connected-client counts; and real-socket
+integration tests for a valid-JSON `/metrics` response, the dashboard
+HTML route, a 404 for an unknown path, and `/metrics` reflecting a live
+connection count from an actual broker connection rather than a
+manually-constructed registry.
+
+**Manually verified end-to-end, beyond the automated tests:** started the
+real broker and metrics server together as a background process, used
+`curl` to fetch the dashboard HTML and the `/metrics` JSON, then ran a
+real Python client over a real socket to `SUBSCRIBE` and `PUBLISH`, and
+confirmed `/metrics` correctly showed `messages_published: 1` and the
+connected-client count changing as the client connected and disconnected.
+
+**What's explicitly NOT done yet:**
+- No historical/time-series metrics -- the dashboard shows current
+  snapshot state only, polled every 2 seconds; there's no record of what
+  the numbers were a minute ago.
+- No authentication on the metrics endpoint -- acceptable for a
+  local/portfolio deployment, not for a real production system.
+- Still not deployed anywhere reachable outside this machine.

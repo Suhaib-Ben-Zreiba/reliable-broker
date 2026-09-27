@@ -4,7 +4,7 @@ A small message broker built from scratch: TCP transport, a custom
 length-prefixed framing protocol, persistent per-topic queues, and
 at-least-once delivery via acknowledgement and retry.
 
-**Status: Milestone 5 of 7 complete.** This project is being built and
+**Status: Milestone 6 of 7 complete.** This project is being built and
 documented milestone by milestone, not dumped in one commit. See
 `docs/PROJECT_LOG.md` for what's done, what's in progress, and the design
 decisions behind each piece.
@@ -16,7 +16,7 @@ day. This one implements the actual mechanics: framing, connection handling,
 persistence, acknowledgement/retry, and concurrent delivery, so that every
 piece can be explained and defended rather than treated as a black box.
 
-## Current functionality (through Milestone 5)
+## Current functionality (through Milestone 6)
 
 - A custom binary framing protocol over TCP (see `PROTOCOL.md` for the
   design rationale).
@@ -49,6 +49,13 @@ piece can be explained and defended rather than treated as a black box.
   see `PROTOCOL.md`). An identified consumer that disconnects and never
   reconnects also leaks its pending redelivery timer; there's no
   expiry/grace-period cleanup yet.
+- A metrics endpoint and dashboard: a second, minimal HTTP server (no
+  framework) exposes `GET /metrics` as JSON -- connected client count,
+  pending ack count, and per-topic publish/subscriber/group counts -- and
+  `GET /` serves a small dark-themed static dashboard that polls
+  `/metrics` every 2 seconds and renders it as stat tiles and a topics
+  table. This is a separate protocol and a separate port from the broker
+  itself, not a new command on the wire protocol in `PROTOCOL.md`.
 
 ## Running it
 
@@ -90,6 +97,14 @@ pytest
   `test_consumer_group_splits_work_across_real_connections` (two real
   connections in a group each get their own half of four published
   messages, with no overlap).
+- `tests/test_metrics.py`: pure unit tests for `build_snapshot()` (no
+  sockets), covering an empty registry, publish/subscriber counts, group
+  membership, and pending-ack/connected-client counts.
+- `tests/test_metrics_server.py`: integration tests against the real
+  metrics HTTP server over real sockets, including a valid-JSON
+  `/metrics` response, the dashboard HTML route, a 404 for an unknown
+  path, and `/metrics` reflecting a live connection count from an actual
+  broker connection (not a manually-constructed registry).
 
 ## Architecture
 
@@ -103,5 +118,5 @@ meaningfully -- a diagram of a TCP echo server isn't worth drawing yet).
 3. ~~Persistent per-topic append-only log~~ (done)
 4. ~~Acknowledgement and timeout-based redelivery~~ (done)
 5. ~~Concurrent multi-consumer delivery + reconnect handling~~ (done)
-6. Metrics endpoint + dashboard
+6. ~~Metrics endpoint + dashboard~~ (done)
 7. Throughput/latency measurement, final documentation pass
