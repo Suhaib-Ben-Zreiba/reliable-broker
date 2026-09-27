@@ -4,7 +4,7 @@ A small message broker built from scratch: TCP transport, a custom
 length-prefixed framing protocol, persistent per-topic queues, and
 at-least-once delivery via acknowledgement and retry.
 
-**Status: Milestone 4 of 7 complete.** This project is being built and
+**Status: Milestone 5 of 7 complete.** This project is being built and
 documented milestone by milestone, not dumped in one commit. See
 `docs/PROJECT_LOG.md` for what's done, what's in progress, and the design
 decisions behind each piece.
@@ -16,7 +16,7 @@ day. This one implements the actual mechanics: framing, connection handling,
 persistence, acknowledgement/retry, and concurrent delivery, so that every
 piece can be explained and defended rather than treated as a black box.
 
-## Current functionality (through Milestone 4)
+## Current functionality (through Milestone 5)
 
 - A custom binary framing protocol over TCP (see `PROTOCOL.md` for the
   design rationale).
@@ -35,11 +35,20 @@ piece can be explained and defended rather than treated as a black box.
   redelivered on the exact same connection, repeating until acked. Uses
   per-message `asyncio` timers rather than a polling sweep, so there's no
   background task to manage or leak.
-- No per-subscriber resume offset yet, and no redelivery to a *different*
-  consumer after the original connection disconnects -- every subscribe
-  still replays from the beginning of history, and a disconnected
-  consumer's pending acks are simply dropped, not reassigned. That's
-  Milestone 5.
+- Consumer identity and reconnect: a subscriber that identifies itself
+  with a `consumer_id` and disconnects without acking gets its outstanding
+  work redelivered on its next connection with the same id, instead of
+  losing it.
+- Consumer groups: subscribers sharing a `group_id` on a topic compete for
+  messages round-robin (one copy per group, split across members) instead
+  of every subscriber getting a full broadcast -- the "competing
+  consumers" pattern used to scale work across a pool of workers.
+- No per-subscriber resume offset yet -- every plain (non-grouped)
+  subscribe still replays a topic's entire history, and grouped
+  subscribers get no replay at all (a documented limitation, not a bug --
+  see `PROTOCOL.md`). An identified consumer that disconnects and never
+  reconnects also leaks its pending redelivery timer; there's no
+  expiry/grace-period cleanup yet.
 
 ## Running it
 
@@ -64,18 +73,23 @@ pytest
   replay (no sockets), including multi-subscriber delivery, cross-topic
   isolation, unsubscribe behavior, and message-id continuation across a
   simulated restart.
-- `tests/test_delivery.py`: pure unit tests for ack tracking and
-  timeout-based redelivery (no sockets), including that redelivery repeats
-  until acked and that forgetting a queue cancels its pending timers.
+- `tests/test_delivery.py`: pure unit tests for ack tracking,
+  timeout-based redelivery, and `reassign()` (no sockets), including that
+  redelivery repeats until acked and that reassigning a queue moves its
+  outstanding work without losing or duplicating it.
 - `tests/test_server.py`: integration tests against a real TCP server and
   real client sockets (not mocked): pub/sub end to end, multiple
   subscribers, unknown-message-type error handling, a disconnect test that
   verifies a dead subscriber's connection doesn't break future publishes,
   `test_broker_restart_does_not_lose_messages` (stops a real server and
-  starts a second one against the same data directory), and
-  `test_unacked_message_is_redelivered_to_the_same_connection`, which
-  proves redelivery end to end over a real socket rather than only at the
-  unit level.
+  starts a second one against the same data directory),
+  `test_unacked_message_is_redelivered_to_the_same_connection`,
+  `test_reconnecting_with_same_consumer_id_recovers_pending_message`
+  (disconnect, reconnect with the same identity, get the exact same
+  outstanding message back), and
+  `test_consumer_group_splits_work_across_real_connections` (two real
+  connections in a group each get their own half of four published
+  messages, with no overlap).
 
 ## Architecture
 
@@ -88,6 +102,6 @@ meaningfully -- a diagram of a TCP echo server isn't worth drawing yet).
 2. ~~CONNECT / PUBLISH / SUBSCRIBE and in-memory topic fan-out~~ (done)
 3. ~~Persistent per-topic append-only log~~ (done)
 4. ~~Acknowledgement and timeout-based redelivery~~ (done)
-5. Concurrent multi-consumer delivery + reconnect handling
+5. ~~Concurrent multi-consumer delivery + reconnect handling~~ (done)
 6. Metrics endpoint + dashboard
 7. Throughput/latency measurement, final documentation pass

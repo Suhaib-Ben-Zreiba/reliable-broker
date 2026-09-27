@@ -263,3 +263,93 @@ subscriber not being redelivered to.
 - No per-subscriber resume offset -- SUBSCRIBE still replays everything,
   every time. Also Milestone 5.
 - Still not deployed.
+
+## Milestone 5: consumer identity, reconnect, and consumer groups
+
+**Decision: `AckTracker._pending` had to change shape before reassign()
+was possible.** It previously stored `key -> TimerHandle` only. Moving a
+consumer's outstanding work to a new queue requires redelivering the
+actual message, and a `TimerHandle` doesn't expose the arguments it was
+scheduled with in any way worth relying on. Refactored to
+`key -> (TimerHandle, message)`, kept the message right next to the
+handle that will eventually fire it, so `reassign()` has what it needs
+without reaching into implementation details of `call_later`.
+
+**Decision: reassign() trusts `_pending` as the sole source of truth for
+what to redeliver, and does not also drain the old queue's buffer.**
+Every message that has ever fired past its first delivery has, at any
+given moment, exactly one live entry in `_pending` (each firing
+immediately re-arms via `record_delivery`), even though stale copies from
+earlier firings may be sitting unread in the old queue's buffer if nobody
+has been reading it. Since that old queue is being abandoned entirely
+once reassigned away from, those stale duplicates are simply garbage
+collected along with it -- there is no need to reconcile them, only to
+move the authoritative pending entries.
+
+**The ordering problem this milestone had to solve, precisely stated:**
+`handle_connection`'s cleanup runs the instant a connection closes, well
+before any reconnect could plausibly happen. A naive
+`unsubscribe_all` -> `forget_queue` on every disconnect (Milestone 4's
+behavior) would wipe out a reconnecting consumer's pending acks before it
+ever got a chance to reconnect and claim them. Solved by giving
+`unsubscribe_all` two different behaviors depending on whether the
+disconnecting queue is identified: an anonymous queue is forgotten
+immediately (unchanged from Milestone 4); an identified one (some
+consumer_id points at it in `_consumer_queues`) is removed from live
+delivery but its pending acks are deliberately left alone, to be resolved
+later by `subscribe()`'s reassign-on-reconnect path. This is also exactly
+why `_consumer_queues[consumer_id]` is NOT cleared on disconnect --
+`subscribe()` needs to still find the old, dead queue there when the same
+consumer_id comes back, specifically so it knows what to reassign from.
+
+**Decision: consumer groups are a second, independent delivery path, not
+a variant of the existing broadcast set.** A queue subscribed with a
+`group_id` is never added to `_subscribers` (the broadcast set) at all --
+it lives only in `_groups[(topic, group_id)]`, and `publish()` walks both
+structures separately: every broadcast subscriber gets a copy, and every
+distinct group gets exactly one member's copy via round robin. This
+keeps the two delivery models -- "everyone gets everything" vs. "exactly
+one of you gets each message" -- from ever being ambiguous about which
+one a given queue is participating in.
+`test_group_members_do_not_also_receive_broadcast` and
+`test_different_groups_on_the_same_topic_each_get_their_own_copy` pin
+down that these two models compose correctly rather than interfering.
+
+**Decision, stated plainly so it isn't mistaken for an oversight: grouped
+subscribers get no historical replay.** Splitting a topic's *history*
+correctly across group members (so each historical message goes to
+exactly one member, same as live ones do) requires tracking, per member,
+which historical messages it has already been assigned -- real systems
+call this partition/offset assignment, and it's a meaningfully larger
+feature than round-robin live delivery. Building a half-correct version
+of it (e.g. replaying full history to whichever group member happens to
+subscribe first) would be actively worse than the current behavior,
+since it would look like it worked while quietly duplicating or losing
+historical work across a group. `test_group_subscription_does_not_replay_history`
+exists to pin this down as intentional.
+
+**What's tested (59 tests total, 14 new this milestone):** reassign()
+moving pending work between queues at the unit level (including a
+no-op-when-nothing-pending case and that the old queue never receives
+anything again afterward), an anonymous disconnect still forgetting
+pending acks immediately (regression guard against breaking Milestone
+4's behavior), an identified disconnect preserving them, a full
+reconnect cycle through the registry, round-robin group delivery,
+groups and broadcast composing correctly, independent groups on the same
+topic, the group-replay limitation, and two real-socket integration
+tests: a genuine reconnect with the same consumer_id recovering a
+pending message, and two real connections in a group splitting four
+published messages with no overlap.
+
+**What's explicitly NOT done yet:**
+- No per-subscriber resume offset for plain (non-grouped) subscriptions --
+  SUBSCRIBE still replays a topic's entire history every time.
+- No replay at all for grouped subscriptions -- a documented limitation,
+  not a gap to quietly work around later without noticing it was a
+  decision.
+- No expiry or grace-period cleanup for an identified consumer that
+  disconnects and never reconnects -- its pending timer keeps firing into
+  an abandoned queue forever. A production system would want a maximum
+  retry count or a TTL on abandoned consumer state; noted here rather than
+  built speculatively.
+- Still not deployed.

@@ -51,6 +51,8 @@ Every payload is a JSON object with at least a `"type"` field:
 {"type": "CONNECT", "role": "consumer", "topics": ["orders"]}
 {"type": "PUBLISH", "topic": "orders", "body": {"order_id": 123}}
 {"type": "SUBSCRIBE", "topic": "orders"}
+{"type": "SUBSCRIBE", "topic": "orders", "consumer_id": "worker-1"}
+{"type": "SUBSCRIBE", "topic": "jobs", "group_id": "workers"}
 {"type": "MESSAGE", "topic": "orders", "message_id": "m-1", "body": {"order_id": 123}}
 {"type": "ACK", "message_id": "m-1"}
 {"type": "ERROR", "reason": "unknown message type"}
@@ -58,7 +60,8 @@ Every payload is a JSON object with at least a `"type"` field:
 
 `CONNECT`, `PUBLISH`, and `SUBSCRIBE` are implemented as of Milestone 2.
 `ACK` (consumer to broker) and redelivery on timeout are implemented as of
-Milestone 4. This document is updated as each milestone adds message
+Milestone 4. `consumer_id` and `group_id` on `SUBSCRIBE` are implemented
+as of Milestone 5. This document is updated as each milestone adds message
 types -- it is meant to always describe the current protocol, not a final
 spec written up front.
 
@@ -102,6 +105,32 @@ At-least-once delivery via acknowledgement and timeout-based redelivery:
   acks are simply cancelled (see `AckTracker.forget_queue`), not
   reassigned. Reassigning undelivered work to another consumer after a
   disconnect is Milestone 5's reconnect/consumer-group problem.
+
+## What Milestone 5 actually implements
+
+Consumer identity and consumer groups:
+
+- `SUBSCRIBE {topic, consumer_id}` associates the connection with a stable
+  identity. If that consumer_id already had a different connection
+  associated with it (the previous one presumably having disconnected),
+  any work still outstanding for it is immediately redelivered on the new
+  connection instead of being lost or stuck retrying into a dead one.
+- `SUBSCRIBE {topic, group_id}` puts the connection into a competing-
+  consumer group: each `PUBLISH` to that topic goes to exactly one member
+  of the group (round robin), not to all of them. Multiple groups on the
+  same topic are independent -- each group gets its own copy of every
+  message, same as Kafka consumer groups.
+- Grouped subscriptions do not receive historical replay. A consumer
+  joining a group only sees messages published from the moment it joins.
+  Correctly splitting *history* across group members would require
+  tracking, per member, which historical messages it has already
+  processed, which is out of scope for this milestone.
+- An anonymous subscription (no consumer_id) behaves exactly as it did in
+  Milestone 4: disconnecting forgets it and its pending acks completely.
+  There is no reconnect story for a subscriber the broker can't identify.
+- An identified subscription that disconnects and never reconnects leaks
+  its pending redelivery timer and an abandoned queue forever -- there is
+  no expiry or grace-period cleanup yet. Documented as a known limitation.
 
 ## What Milestone 3 actually implements
 
