@@ -71,13 +71,21 @@ async def _handle_frame(
         if not topic:
             await outbound.put({"type": "ERROR", "reason": "SUBSCRIBE requires a topic"})
             return
+        consumer_id = frame.get("consumer_id")
+        group_id = frame.get("group_id")
         # subscribe() then replay() with no `await` between them is
         # deliberate -- see TopicRegistry.replay() for why that ordering
         # is what makes this race-free against a concurrent PUBLISH.
-        registry.subscribe(topic, outbound)
-        replayed = registry.replay(topic, outbound)
+        registry.subscribe(topic, outbound, consumer_id=consumer_id, group_id=group_id)
+        # Grouped subscribers don't get historical replay -- see the
+        # module docstring in topics.py for why that's a deliberate
+        # limitation rather than a missing feature.
+        replayed = registry.replay(topic, outbound) if group_id is None else 0
         subscribed_topics.add(topic)
-        logger.info("%s SUBSCRIBE topic=%s replayed=%d", peer, topic, replayed)
+        logger.info(
+            "%s SUBSCRIBE topic=%s consumer_id=%s group_id=%s replayed=%d",
+            peer, topic, consumer_id, group_id, replayed,
+        )
 
     elif msg_type == "ACK":
         message_id = frame.get("message_id")

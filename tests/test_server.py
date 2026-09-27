@@ -364,3 +364,80 @@ async def test_disconnected_subscriber_is_not_redelivered_to():
     finally:
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reconnecting_with_same_consumer_id_recovers_pending_message():
+    """The real end-to-end proof for Milestone 5: a consumer identifies
+    itself, receives a message, disconnects without acking, and a NEW
+    connection claiming the same consumer_id gets that message without it
+    ever being republished."""
+    registry = TopicRegistry(ack_tracker=AckTracker(timeout=ACK_TIMEOUT))
+    server = await run_server(host="127.0.0.1", port=0, registry=registry)
+    addr = server.sockets[0].getsockname()
+
+    try:
+        first_reader, first_writer = await _connect(addr)
+        first_writer.write(encode_frame({"type": "SUBSCRIBE", "topic": "orders", "consumer_id": "worker-1"}))
+        await first_writer.drain()
+
+        pub_reader, pub_writer = await _connect(addr)
+        pub_writer.write(encode_frame({"type": "PUBLISH", "topic": "orders", "body": {"id": 1}}))
+        await pub_writer.drain()
+
+        delivered = await asyncio.wait_for(read_frame(first_reader), timeout=2)
+        assert delivered["body"] == {"id": 1}
+
+        # Disconnect without acking, then reconnect as the same consumer.
+        first_writer.close()
+        await first_writer.wait_closed()
+        await asyncio.sleep(0.1)  # let the server notice the disconnect
+
+        second_reader, second_writer = await _connect(addr)
+        second_writer.write(encode_frame({"type": "SUBSCRIBE", "topic": "orders", "consumer_id": "worker-1"}))
+        await second_writer.drain()
+
+        recovered = await asyncio.wait_for(read_frame(second_reader), timeout=2)
+        assert recovered["body"] == {"id": 1}
+        assert recovered["message_id"] == delivered["message_id"]
+
+        for w in (second_writer, pub_writer):
+            w.close()
+            await w.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_consumer_group_splits_work_across_real_connections():
+    registry = TopicRegistry()
+    server = await run_server(host="127.0.0.1", port=0, registry=registry)
+    addr = server.sockets[0].getsockname()
+
+    try:
+        worker_a_reader, worker_a_writer = await _connect(addr)
+        worker_a_writer.write(encode_frame({"type": "SUBSCRIBE", "topic": "jobs", "group_id": "workers"}))
+        await worker_a_writer.drain()
+
+        worker_b_reader, worker_b_writer = await _connect(addr)
+        worker_b_writer.write(encode_frame({"type": "SUBSCRIBE", "topic": "jobs", "group_id": "workers"}))
+        await worker_b_writer.drain()
+
+        pub_reader, pub_writer = await _connect(addr)
+        for i in range(4):
+            pub_writer.write(encode_frame({"type": "PUBLISH", "topic": "jobs", "body": {"id": i}}))
+            await pub_writer.drain()
+
+        received_by_a = [(await asyncio.wait_for(read_frame(worker_a_reader), timeout=2))["body"]["id"] for _ in range(2)]
+        received_by_b = [(await asyncio.wait_for(read_frame(worker_b_reader), timeout=2))["body"]["id"] for _ in range(2)]
+
+        assert set(received_by_a) | set(received_by_b) == {0, 1, 2, 3}
+        assert set(received_by_a).isdisjoint(received_by_b)
+
+        for w in (worker_a_writer, worker_b_writer, pub_writer):
+            w.close()
+            await w.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
