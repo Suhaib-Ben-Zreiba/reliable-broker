@@ -1,11 +1,12 @@
 """Unit tests for the topic registry. No sockets or asyncio streams here --
-these exercise fan-out and persistence logic directly, per the isolation
-approach used in test_protocol.py."""
+these exercise fan-out, persistence, and ack-tracking wiring directly, per
+the isolation approach used in test_protocol.py."""
 
 import asyncio
 
 import pytest
 
+from broker.delivery import AckTracker
 from broker.storage import LogStore
 from broker.topics import TopicRegistry
 
@@ -175,3 +176,67 @@ async def test_registry_without_a_store_still_works_in_memory_only():
 
     assert delivered == 1
     assert registry.replay("orders", asyncio.Queue()) == 0
+
+
+# --- Acknowledgement wiring: the actual point of Milestone 4 -----------
+
+
+TIMEOUT = 0.1
+PAST_TIMEOUT = TIMEOUT * 1.5
+
+
+@pytest.mark.asyncio
+async def test_publish_registers_delivery_with_ack_tracker():
+    tracker = AckTracker(timeout=TIMEOUT)
+    registry = TopicRegistry(ack_tracker=tracker)
+    queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue)
+
+    await registry.publish("orders", {"id": 1})
+
+    assert tracker.pending_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_unacked_publish_is_redelivered_through_the_full_registry():
+    tracker = AckTracker(timeout=TIMEOUT)
+    registry = TopicRegistry(ack_tracker=tracker)
+    queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue)
+
+    await registry.publish("orders", {"id": 1})
+    queue.get_nowait()  # simulate the consumer receiving it, but not acking
+
+    await asyncio.sleep(PAST_TIMEOUT)
+
+    assert queue.qsize() == 1
+    assert queue.get_nowait()["body"] == {"id": 1}
+
+
+@pytest.mark.asyncio
+async def test_replay_registers_delivery_with_ack_tracker(tmp_path):
+    tracker = AckTracker(timeout=TIMEOUT)
+    store = LogStore(tmp_path)
+    registry = TopicRegistry(store=store, ack_tracker=tracker)
+    await registry.publish("orders", {"id": 1})
+
+    queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue)
+    registry.replay("orders", queue)
+
+    assert tracker.pending_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_all_forgets_pending_acks_for_that_queue():
+    tracker = AckTracker(timeout=TIMEOUT)
+    registry = TopicRegistry(ack_tracker=tracker)
+    queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue)
+    await registry.publish("orders", {"id": 1})
+
+    registry.unsubscribe_all(queue)
+
+    assert tracker.pending_count() == 0
+    await asyncio.sleep(PAST_TIMEOUT)
+    assert queue.qsize() == 1  # the original delivery, not a redelivery
