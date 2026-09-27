@@ -240,3 +240,144 @@ async def test_unsubscribe_all_forgets_pending_acks_for_that_queue():
     assert tracker.pending_count() == 0
     await asyncio.sleep(PAST_TIMEOUT)
     assert queue.qsize() == 1  # the original delivery, not a redelivery
+
+
+# --- Consumer identity and reconnect: Milestone 5 ----------------------
+
+
+@pytest.mark.asyncio
+async def test_disconnecting_an_anonymous_queue_still_forgets_pending_acks():
+    """Regression guard: a plain subscriber with no consumer_id must keep
+    behaving exactly like Milestone 4 -- disconnect forgets it completely,
+    there is no reconnect story for an unidentified subscriber."""
+    tracker = AckTracker(timeout=TIMEOUT)
+    registry = TopicRegistry(ack_tracker=tracker)
+    queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue)
+    await registry.publish("orders", {"id": 1})
+
+    registry.unsubscribe_all(queue)
+
+    assert tracker.pending_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_identified_consumer_disconnect_preserves_pending_acks():
+    tracker = AckTracker(timeout=TIMEOUT)
+    registry = TopicRegistry(ack_tracker=tracker)
+    queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue, consumer_id="worker-1")
+    await registry.publish("orders", {"id": 1})
+
+    registry.unsubscribe_all(queue)
+
+    # Unlike an anonymous disconnect, this must NOT be forgotten -- it's
+    # waiting for worker-1 to reconnect and claim it.
+    assert tracker.pending_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_reconnect_with_same_consumer_id_reassigns_pending_work():
+    tracker = AckTracker(timeout=TIMEOUT)
+    registry = TopicRegistry(ack_tracker=tracker)
+    old_queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", old_queue, consumer_id="worker-1")
+    await registry.publish("orders", {"id": 1})
+    old_queue.get_nowait()  # received, not acked, then "worker-1" disconnects
+    registry.unsubscribe_all(old_queue)
+
+    new_queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", new_queue, consumer_id="worker-1")
+
+    # The message that was outstanding for worker-1 arrives on its new
+    # connection without needing to be republished.
+    assert new_queue.get_nowait()["body"] == {"id": 1}
+    assert old_queue.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_reconnected_consumer_still_receives_new_broadcasts():
+    registry = TopicRegistry()
+    old_queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", old_queue, consumer_id="worker-1")
+    registry.unsubscribe_all(old_queue)
+
+    new_queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", new_queue, consumer_id="worker-1")
+
+    delivered = await registry.publish("orders", {"id": 2})
+
+    assert delivered == 1
+    assert new_queue.get_nowait()["body"] == {"id": 2}
+
+
+# --- Consumer groups: competing consumers, Milestone 5 ------------------
+
+
+@pytest.mark.asyncio
+async def test_group_members_split_messages_round_robin():
+    registry = TopicRegistry()
+    queue_a: asyncio.Queue = asyncio.Queue()
+    queue_b: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue_a, group_id="workers")
+    registry.subscribe("orders", queue_b, group_id="workers")
+
+    for i in range(4):
+        await registry.publish("orders", {"id": i})
+
+    # Round robin over 2 members and 4 messages: each gets exactly 2, and
+    # nobody gets the same message as the other (no duplication).
+    a_ids = {queue_a.get_nowait()["body"]["id"] for _ in range(2)}
+    b_ids = {queue_b.get_nowait()["body"]["id"] for _ in range(2)}
+    assert a_ids | b_ids == {0, 1, 2, 3}
+    assert a_ids.isdisjoint(b_ids)
+    assert queue_a.qsize() == 0
+    assert queue_b.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_group_members_do_not_also_receive_broadcast():
+    registry = TopicRegistry()
+    grouped: asyncio.Queue = asyncio.Queue()
+    broadcast: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", grouped, group_id="workers")
+    registry.subscribe("orders", broadcast)  # plain, ungrouped
+
+    delivered = await registry.publish("orders", {"id": 1})
+
+    # One copy to the group member, one to the broadcast subscriber -- not
+    # the group member getting it twice via both paths.
+    assert delivered == 2
+    assert grouped.qsize() == 1
+    assert broadcast.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_different_groups_on_the_same_topic_each_get_their_own_copy():
+    """Two independent worker pools consuming the same topic -- each pool
+    processes every message once, same as Kafka consumer groups."""
+    registry = TopicRegistry()
+    pool_a: asyncio.Queue = asyncio.Queue()
+    pool_b: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", pool_a, group_id="pool-a")
+    registry.subscribe("orders", pool_b, group_id="pool-b")
+
+    delivered = await registry.publish("orders", {"id": 1})
+
+    assert delivered == 2
+    assert pool_a.get_nowait()["body"] == {"id": 1}
+    assert pool_b.get_nowait()["body"] == {"id": 1}
+
+
+@pytest.mark.asyncio
+async def test_group_subscription_does_not_replay_history(tmp_path):
+    """Deliberate limitation, documented in topics.py and PROJECT_LOG.md:
+    splitting historical backlog correctly across group members would
+    need per-member offset tracking, which is out of scope here."""
+    registry = TopicRegistry(store=LogStore(tmp_path))
+    await registry.publish("orders", {"id": 1})
+
+    queue: asyncio.Queue = asyncio.Queue()
+    registry.subscribe("orders", queue, group_id="workers")
+
+    assert queue.qsize() == 0
