@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import logging
 
+from broker.delivery import AckTracker
 from broker.protocol import ConnectionClosedError, encode_frame, read_frame
 from broker.storage import LogStore
 from broker.topics import TopicRegistry
@@ -78,6 +79,14 @@ async def _handle_frame(
         subscribed_topics.add(topic)
         logger.info("%s SUBSCRIBE topic=%s replayed=%d", peer, topic, replayed)
 
+    elif msg_type == "ACK":
+        message_id = frame.get("message_id")
+        if not message_id:
+            await outbound.put({"type": "ERROR", "reason": "ACK requires a message_id"})
+            return
+        acked = registry.ack_tracker.ack(outbound, message_id) if registry.ack_tracker is not None else False
+        logger.info("%s ACK message_id=%s known=%s", peer, message_id, acked)
+
     else:
         await outbound.put({"type": "ERROR", "reason": f"unknown message type: {msg_type!r}"})
 
@@ -124,7 +133,7 @@ async def run_server(host: str = "127.0.0.1", port: int = 8765, registry: TopicR
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    registry = TopicRegistry(store=LogStore("data"))
+    registry = TopicRegistry(store=LogStore("data"), ack_tracker=AckTracker(timeout=5.0))
     server = await run_server(registry=registry)
     async with server:
         await server.serve_forever()

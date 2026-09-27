@@ -1,18 +1,22 @@
-"""Integration tests for Milestones 2 and 3: real TCP sockets, real asyncio
-server, real publish/subscribe fan-out and persistence end to end. The
-server no longer echoes frames (that was Milestone 1 scaffolding to prove
-framing worked); these tests exercise CONNECT/PUBLISH/SUBSCRIBE and,
-starting with test_broker_restart_does_not_lose_messages below, durable
-replay across a simulated restart."""
+"""Integration tests for Milestones 2, 3, and 4: real TCP sockets, real
+asyncio server, real publish/subscribe fan-out, persistence, and
+acknowledgement/redelivery end to end. The server no longer echoes frames
+(that was Milestone 1 scaffolding to prove framing worked); these tests
+exercise CONNECT/PUBLISH/SUBSCRIBE/ACK and durable replay across a
+simulated restart."""
 
 import asyncio
 
 import pytest
 
+from broker.delivery import AckTracker
 from broker.protocol import encode_frame, read_frame
 from broker.server import run_server
 from broker.storage import LogStore
 from broker.topics import TopicRegistry
+
+ACK_TIMEOUT = 0.1
+PAST_ACK_TIMEOUT = ACK_TIMEOUT * 1.5
 
 
 async def _connect(addr):
@@ -254,3 +258,109 @@ async def test_broker_restart_does_not_lose_messages(tmp_path):
     finally:
         second_server.close()
         await second_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_unacked_message_is_redelivered_to_the_same_connection():
+    """The real end-to-end proof for Milestone 4: a subscriber that
+    receives a message but never ACKs it gets sent that exact message
+    again, over the same real socket, once the ack timeout elapses."""
+    registry = TopicRegistry(ack_tracker=AckTracker(timeout=ACK_TIMEOUT))
+    server = await run_server(host="127.0.0.1", port=0, registry=registry)
+    addr = server.sockets[0].getsockname()
+
+    try:
+        sub_reader, sub_writer = await _connect(addr)
+        sub_writer.write(encode_frame({"type": "SUBSCRIBE", "topic": "orders"}))
+        await sub_writer.drain()
+
+        pub_reader, pub_writer = await _connect(addr)
+        pub_writer.write(encode_frame({"type": "PUBLISH", "topic": "orders", "body": {"id": 1}}))
+        await pub_writer.drain()
+
+        first_delivery = await asyncio.wait_for(read_frame(sub_reader), timeout=2)
+        assert first_delivery["body"] == {"id": 1}
+        # Deliberately not acking.
+
+        redelivery = await asyncio.wait_for(read_frame(sub_reader), timeout=2)
+        assert redelivery == first_delivery
+
+        for w in (sub_writer, pub_writer):
+            w.close()
+            await w.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_acked_message_is_not_redelivered():
+    registry = TopicRegistry(ack_tracker=AckTracker(timeout=ACK_TIMEOUT))
+    server = await run_server(host="127.0.0.1", port=0, registry=registry)
+    addr = server.sockets[0].getsockname()
+
+    try:
+        sub_reader, sub_writer = await _connect(addr)
+        sub_writer.write(encode_frame({"type": "SUBSCRIBE", "topic": "orders"}))
+        await sub_writer.drain()
+
+        pub_reader, pub_writer = await _connect(addr)
+        pub_writer.write(encode_frame({"type": "PUBLISH", "topic": "orders", "body": {"id": 1}}))
+        await pub_writer.drain()
+
+        delivered = await asyncio.wait_for(read_frame(sub_reader), timeout=2)
+        sub_writer.write(encode_frame({"type": "ACK", "message_id": delivered["message_id"]}))
+        await sub_writer.drain()
+
+        # Give the ack a moment to be processed, then confirm nothing more
+        # arrives within a window comfortably past the ack timeout.
+        await asyncio.sleep(PAST_ACK_TIMEOUT)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(read_frame(sub_reader), timeout=PAST_ACK_TIMEOUT)
+
+        for w in (sub_writer, pub_writer):
+            w.close()
+            await w.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_subscriber_is_not_redelivered_to():
+    """Ensures forget_queue() is actually wired into connection close: an
+    unacked message must not keep being pushed into a closed connection's
+    queue forever."""
+    registry = TopicRegistry(ack_tracker=AckTracker(timeout=ACK_TIMEOUT))
+    server = await run_server(host="127.0.0.1", port=0, registry=registry)
+    addr = server.sockets[0].getsockname()
+
+    try:
+        sub_reader, sub_writer = await _connect(addr)
+        sub_writer.write(encode_frame({"type": "SUBSCRIBE", "topic": "orders"}))
+        await sub_writer.drain()
+
+        pub_reader, pub_writer = await _connect(addr)
+        pub_writer.write(encode_frame({"type": "PUBLISH", "topic": "orders", "body": {"id": 1}}))
+        await pub_writer.drain()
+
+        await asyncio.wait_for(read_frame(sub_reader), timeout=2)  # received, not acked
+        sub_writer.close()
+        await sub_writer.wait_closed()
+
+        # Give the server a moment to notice the disconnect and clean up,
+        # same pattern as the Milestone 2 disconnect test.
+        await asyncio.sleep(0.1)
+
+        # If forget_queue() weren't wired in, the ack timer would still be
+        # armed and would try to redeliver into the now-closed connection's
+        # queue forever. Nothing observable to assert on the client side
+        # (the connection is closed) -- this test's real job is to run
+        # cleanly to completion without hanging or raising.
+        await asyncio.sleep(PAST_ACK_TIMEOUT)
+
+        pub_writer.close()
+        await pub_writer.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
