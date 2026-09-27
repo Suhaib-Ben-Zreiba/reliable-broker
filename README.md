@@ -4,7 +4,7 @@ A small message broker built from scratch: TCP transport, a custom
 length-prefixed framing protocol, persistent per-topic queues, and
 at-least-once delivery via acknowledgement and retry.
 
-**Status: Milestone 6 of 7 complete.** This project is being built and
+**Status: Milestone 7 of 7 complete.** This project is being built and
 documented milestone by milestone, not dumped in one commit. See
 `docs/PROJECT_LOG.md` for what's done, what's in progress, and the design
 decisions behind each piece.
@@ -16,7 +16,7 @@ day. This one implements the actual mechanics: framing, connection handling,
 persistence, acknowledgement/retry, and concurrent delivery, so that every
 piece can be explained and defended rather than treated as a black box.
 
-## Current functionality (through Milestone 6)
+## Current functionality (through Milestone 7)
 
 - A custom binary framing protocol over TCP (see `PROTOCOL.md` for the
   design rationale).
@@ -108,8 +108,22 @@ pytest
 
 ## Architecture
 
-See `docs/architecture.md` (added once there's enough system to diagram
-meaningfully -- a diagram of a TCP echo server isn't worth drawing yet).
+See `docs/architecture.md` for a component diagram and the reasoning
+behind the main structural decisions (why `TopicRegistry` has no
+dependency on sockets, why metrics get a separate server on a separate
+port).
+
+## Benchmarks
+
+```bash
+python -m benchmarks.throughput
+```
+
+Real latency and throughput numbers, measured against the actual broker
+over real sockets, not estimated. See `docs/BENCHMARKS.md` for
+methodology, the last captured results, and this methodology's honest
+limitations (single publisher/subscriber, loopback only, not a
+competitive benchmark).
 
 ## Roadmap
 
@@ -119,4 +133,11 @@ meaningfully -- a diagram of a TCP echo server isn't worth drawing yet).
 4. ~~Acknowledgement and timeout-based redelivery~~ (done)
 5. ~~Concurrent multi-consumer delivery + reconnect handling~~ (done)
 6. ~~Metrics endpoint + dashboard~~ (done)
-7. Throughput/latency measurement, final documentation pass
+7. ~~Throughput/latency measurement, final documentation pass~~ (done)
+
+All seven milestones are complete. What's explicitly NOT built, and why,
+is documented where it's relevant rather than collected into a vague
+"future work" list: see the "explicitly NOT done yet" section of each
+milestone in `docs/PROJECT_LOG.md`, and the wire-protocol-level
+limitations (no per-subscriber resume offset, no replay for consumer
+groups) in `PROTOCOL.md`.

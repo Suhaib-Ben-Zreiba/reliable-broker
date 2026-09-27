@@ -420,3 +420,56 @@ connected-client count changing as the client connected and disconnected.
 - No authentication on the metrics endpoint -- acceptable for a
   local/portfolio deployment, not for a real production system.
 - Still not deployed anywhere reachable outside this machine.
+
+## Milestone 7: throughput/latency measurement and final documentation pass
+
+**Decision: measure against a real broker over real sockets, not
+estimate.** `benchmarks/throughput.py` starts an actual `asyncio` TCP
+server and connects real client sockets to it -- the same "don't mock the
+thing you're claiming to measure" rule the test suite has followed since
+Milestone 1. There is no synthetic model of the broker's performance
+anywhere in this project.
+
+**Decision: measure both with and without persistence, not just the
+production configuration.** `broker/storage.py`'s own docstring on
+`TopicLog.append()` names per-message `open`/`write`/`flush` as a
+plausible bottleneck worth measuring before optimizing. Milestone 7 is
+that measurement: running the same benchmark against a `TopicRegistry`
+with and without a `LogStore` isolates exactly what persistence costs,
+instead of reporting one number and guessing at what's driving it.
+
+**Decision: report a range from three runs, not one number.** The first
+run of the throughput benchmark alone produced 63,190 msg/s for the
+in-memory scenario; a second run produced 51,672; a third produced
+40,625 -- all on the same code, same machine, same benchmark. That
+spread is itself the honest finding: this is a shared, virtualized
+sandbox, not dedicated hardware, and reporting a single cherry-picked
+number would misrepresent the measurement's own precision.
+`docs/BENCHMARKS.md` reports all three runs and says so explicitly,
+rather than averaging away a result that doesn't fit a clean story.
+
+**What the numbers actually showed:** median publish-to-receive latency
+is sub-millisecond either way (roughly 0.06-0.10 ms across all six
+latency runs), and persistence visibly costs throughput (roughly
+35,000-39,000 msg/s with `LogStore` versus 40,000-63,000 without, across
+the same three runs) -- consistent with the per-message synchronous disk
+write `storage.py` already documented as the likely cost. Full numbers,
+methodology, and limitations are in `docs/BENCHMARKS.md`, not
+duplicated here.
+
+**Decision: an ASCII diagram in `docs/architecture.md`, not a generated
+image.** Every other design artifact in this repository (JSONL logs,
+plain-text protocol docs) is readable directly from the repository
+without extra tooling; a text diagram of components and data flow keeps
+that property, and is trivial to keep in sync by hand as the system
+changes.
+
+**What's explicitly NOT done, project-wide, now that all seven milestones
+are complete:** no per-subscriber resume offset, no replay for consumer
+groups, no maximum retry count or dead-letter queue, no expiry for an
+identified consumer that disconnects and never returns, no
+authentication anywhere (wire protocol or metrics endpoint), and no
+deployment beyond this machine. Each of these is documented at the
+milestone where it was introduced, in `PROTOCOL.md`, or in this file --
+listed together here once, at the end, so the full set of known gaps is
+visible in one place without pretending any of them are secretly solved.
