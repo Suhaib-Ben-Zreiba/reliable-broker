@@ -183,7 +183,83 @@ receiving what was published before the "restart."
 - No per-subscriber offset. Every SUBSCRIBE replays the *entire* history
   of a topic, every time, even for a consumer that already saw all of it
   five seconds ago. This is fine for now and would be wasteful at scale --
-  exactly the kind of thing Milestone 4/5's ack tracking is meant to fix
+  exactly the kind of thing Milestone 4's ack tracking is meant to fix
   by letting a consumer resume from its own last-acknowledged point instead
   of from zero.
+- Still not deployed.
+
+## Milestone 4: acknowledgement and timeout-based redelivery
+
+**Decision: per-message `loop.call_later` timers, not a periodic sweep.**
+The obvious design is a background task that wakes up every N seconds and
+checks every pending delivery for whether it's expired. I didn't build
+that. A sweep needs its own lifecycle: something has to start it when the
+broker starts and explicitly cancel it when the broker stops, which is
+exactly the class of bug Milestone 2's `asyncio.gather()` task leak was --
+one more background task that has to be managed correctly or it leaks. A
+per-message timer via `loop.call_later()` is owned entirely by the event
+loop: it fires at its exact deadline instead of up to one sweep-interval
+late, and acking a message is one `handle.cancel()` call. `AckTracker`
+ends up with no `start()`/`stop()` at all as a direct consequence.
+
+**What actually failed on the first attempt, and why it wasn't a real
+bug:** the first version of `tests/test_delivery.py` used
+`PAST_TIMEOUT = TIMEOUT * 3` as the sleep margin after each redelivery
+check. That's wrong on purpose-adjacent grounds: redelivery re-arms itself
+for another full `TIMEOUT`, so sleeping 3x the timeout reliably let two or
+three redelivery cycles fire instead of the one each test expected --
+`qsize()` came back 2 or 3, not 1. This wasn't asyncio timing jitter, it
+was the test's margin arithmetic not accounting for the fact that the
+thing under test *repeats itself*. Fixed by using a margin just past one
+timeout (1.5x) for single-cycle assertions, and a separate, tighter margin
+(1.2x, on top of a larger base timeout of 0.1s instead of 0.05s to shrink
+the relative effect of real scheduling jitter) for the one test that
+needs to observe two separate redelivery cycles without also catching a
+third.
+
+**Decision: replayed messages get acknowledgement too.** A message a
+consumer receives via history replay after Milestone 3 is exactly as
+important as one delivered live -- there's no principled reason it should
+be exempt from the same at-least-once guarantee. `TopicRegistry.replay()`
+now calls `ack_tracker.record_delivery()` for every replayed record, the
+same call `publish()` makes for a live one.
+
+**Decision: an unknown or duplicate ACK is not an error.** A consumer's
+ACK racing a redelivery that already happened (the timer fired a moment
+before the ACK arrived) is an ordinary, expected condition in a
+distributed-ish system, not a client mistake. `AckTracker.ack()` returns
+`False` rather than raising, and the server logs it rather than sending
+back an ERROR frame.
+
+**Decision: disconnecting a subscriber must cancel its pending
+redeliveries, not just its subscriptions.** `TopicRegistry.unsubscribe_all()`
+now also calls `ack_tracker.forget_queue()`. Without this, a client that
+disconnects mid-delivery would have its unacked messages redelivered
+forever into a queue nobody will ever read from again -- the same shape of
+resource leak as the Milestone 2 task-leak bug, just in a different
+component. `test_disconnected_subscriber_is_not_redelivered_to` exists
+specifically to exercise this path, even though there's nothing to assert
+on the client side once the connection is closed; its job is to prove the
+scenario runs cleanly rather than hanging.
+
+**What's tested (45 tests total, 14 new this milestone):** ack-before-
+timeout preventing redelivery, unacked messages being redelivered, repeat
+redelivery until acked, forgetting a queue cancelling its timers, unknown
+acks returning false rather than raising, multiple independent unacked
+messages, registry-level wiring of ack tracking into both publish() and
+replay(), and three real-socket integration tests: redelivery to the same
+connection, no redelivery after a real ACK frame, and a disconnected
+subscriber not being redelivered to.
+
+**What's explicitly NOT done yet:**
+- No maximum retry count or dead-letter queue -- an unacked message is
+  retried forever. Documented as a future option, not a gap discovered by
+  accident.
+- No redelivery to a *different* consumer after the original connection
+  disconnects. A disconnected consumer's pending work is simply dropped,
+  not reassigned to another subscriber of the same topic. That requires a
+  notion of consumer identity that survives a reconnect, which is
+  Milestone 5.
+- No per-subscriber resume offset -- SUBSCRIBE still replays everything,
+  every time. Also Milestone 5.
 - Still not deployed.

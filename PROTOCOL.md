@@ -57,10 +57,10 @@ Every payload is a JSON object with at least a `"type"` field:
 ```
 
 `CONNECT`, `PUBLISH`, and `SUBSCRIBE` are implemented as of Milestone 2.
-`ACK` (consumer to broker) and redelivery on timeout are implemented in
-Milestone 4. This document is updated as each milestone adds message types --
-it is meant to always describe the current protocol, not a final spec
-written up front.
+`ACK` (consumer to broker) and redelivery on timeout are implemented as of
+Milestone 4. This document is updated as each milestone adds message
+types -- it is meant to always describe the current protocol, not a final
+spec written up front.
 
 `ERROR` is returned for any frame whose `"type"` is not one of the above.
 
@@ -82,6 +82,27 @@ In-memory publish/subscribe fan-out:
   delivered copy of a message can be referred to unambiguously once
   Milestone 4 adds per-subscriber acknowledgement.
 
+## What Milestone 4 actually implements
+
+At-least-once delivery via acknowledgement and timeout-based redelivery:
+
+- Every delivery (live publish or history replay) starts a per-message
+  timer. If the receiving connection sends `ACK {message_id}` before the
+  timer fires, the timer is cancelled. If it doesn't, the broker
+  redelivers the exact same message to the exact same connection and
+  starts a new timer -- this repeats indefinitely until acked. There is no
+  maximum retry count or dead-letter queue yet; that's a documented future
+  option, not an oversight.
+- `ACK` for an unknown or already-handled `message_id` is not an error --
+  it returns quietly. A late ack racing a redelivery, or a duplicate ack,
+  is a normal condition, not a protocol violation.
+- Redelivery targets the same connection a message was originally sent to.
+  There is no concept yet of redelivering to a *different* consumer after
+  the original one disconnects -- when a connection closes, its pending
+  acks are simply cancelled (see `AckTracker.forget_queue`), not
+  reassigned. Reassigning undelivered work to another consumer after a
+  disconnect is Milestone 5's reconnect/consumer-group problem.
+
 ## What Milestone 3 actually implements
 
 Durable, replayable topics:
@@ -95,10 +116,11 @@ Durable, replayable topics:
   used to drop the message forever) is closed.
 - A restarted broker resumes message id assignment after whatever was
   already on disk, so ids never collide across a restart.
-- There is still no acknowledgement and no notion of "resume from where I
-  left off" -- every SUBSCRIBE replays from the very beginning of the
-  topic's history, every time. Per-subscriber offsets are Milestone 4/5
-  territory, not this one.
+- At the time this milestone was written, there was still no
+  acknowledgement (that arrived in Milestone 4) and there is still no
+  notion of "resume from where I left off" -- every SUBSCRIBE replays from
+  the very beginning of the topic's history, every time. Per-subscriber
+  offsets are Milestone 5 territory, not this one.
 
 ## What Milestone 1 implemented
 
