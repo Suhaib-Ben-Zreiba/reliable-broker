@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reliable Broker Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    background: #0b0d10;
+    color: #d7dade;
+    margin: 0;
+    padding: 2rem;
+  }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 0.25rem; }
+  .subtitle { color: #7c828c; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .stat-row { display: flex; gap: 1.5rem; margin-bottom: 1.5rem; }
+  .stat {
+    border: 1px solid #23262b;
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    min-width: 120px;
+  }
+  .stat .value { font-size: 1.4rem; font-weight: 700; }
+  .stat .label { color: #7c828c; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #1c1f24; }
+  th { color: #7c828c; font-weight: 500; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.04em; }
+  .empty { color: #565a61; padding: 1rem 0; }
+  .error { color: #e5793a; }
+</style>
+</head>
+<body>
+  <h1>Reliable Broker</h1>
+  <div class="subtitle" id="subtitle">connecting...</div>
+
+  <div class="stat-row">
+    <div class="stat"><div class="value" id="stat-clients">-</div><div class="label">Connected Clients</div></div>
+    <div class="stat"><div class="value" id="stat-pending">-</div><div class="label">Pending Acks</div></div>
+    <div class="stat"><div class="value" id="stat-topics">-</div><div class="label">Known Topics</div></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Topic</th><th>Published</th><th>Broadcast Subscribers</th><th>Groups</th></tr>
+    </thead>
+    <tbody id="topic-rows"></tbody>
+  </table>
+  <div class="empty" id="empty-msg" style="display:none;">No topics yet.</div>
+
+  <script>
+    async function refresh() {
+      const subtitle = document.getElementById("subtitle");
+      try {
+        const res = await fetch("/metrics");
+        const data = await res.json();
+
+        subtitle.textContent = "last updated " + new Date().toLocaleTimeString();
+        subtitle.className = "subtitle";
+
+        document.getElementById("stat-clients").textContent = data.connected_clients;
+        document.getElementById("stat-pending").textContent = data.pending_acks;
+        const topics = Object.keys(data.topics);
+        document.getElementById("stat-topics").textContent = topics.length;
+
+        const rows = document.getElementById("topic-rows");
+        rows.innerHTML = "";
+        document.getElementById("empty-msg").style.display = topics.length ? "none" : "block";
+
+        for (const name of topics.sort()) {
+          const t = data.topics[name];
+          const groupText = Object.keys(t.groups).length
+            ? Object.entries(t.groups).map(([g, n]) => `${g} (${n})`).join(", ")
+            : "-";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${name}</td><td>${t.messages_published}</td>` +
+                          `<td>${t.broadcast_subscribers}</td><td>${groupText}</td>`;
+          rows.appendChild(tr);
+        }
+      } catch (err) {
+        subtitle.textContent = "disconnected, retrying...";
+        subtitle.className = "subtitle error";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
