@@ -20,6 +20,7 @@ import contextlib
 import logging
 
 from broker.delivery import AckTracker
+from broker.metrics import run_metrics_server
 from broker.protocol import ConnectionClosedError, encode_frame, read_frame
 from broker.storage import LogStore
 from broker.topics import TopicRegistry
@@ -102,6 +103,7 @@ async def _handle_frame(
 async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, registry: TopicRegistry) -> None:
     peer = writer.get_extra_info("peername")
     logger.info("connection opened: %s", peer)
+    registry.active_connections += 1
 
     outbound: asyncio.Queue = asyncio.Queue()
     subscribed_topics: set[str] = set()
@@ -122,6 +124,7 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
             logger.warning("connection %s ended with unexpected error: %r", peer, exc)
 
     registry.unsubscribe_all(outbound)
+    registry.active_connections -= 1
     writer.close()
     await writer.wait_closed()
     logger.info("connection closed: %s", peer)
@@ -143,8 +146,11 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     registry = TopicRegistry(store=LogStore("data"), ack_tracker=AckTracker(timeout=5.0))
     server = await run_server(registry=registry)
-    async with server:
-        await server.serve_forever()
+    metrics_server = await run_metrics_server(registry)
+    metrics_addr = metrics_server.sockets[0].getsockname()
+    logger.info("dashboard/metrics listening on http://%s:%s", metrics_addr[0], metrics_addr[1])
+    async with server, metrics_server:
+        await asyncio.gather(server.serve_forever(), metrics_server.serve_forever())
 
 
 if __name__ == "__main__":
