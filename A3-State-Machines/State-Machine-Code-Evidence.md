@@ -38,7 +38,14 @@ Java source was not modified. Line numbers below were verified against that ZIP.
 
 ### Behaviour summary
 
-`Level` stores lifecycle in `inProgress`. The constructor sets `inProgress = false` (initial state **Stopped**). `start()` is ignored if already running (early return — **not** a guard); otherwise it calls `startNPCs()`, sets `inProgress = true`, and `updateObservers()` (**Stopped → Running**). `stop()` is ignored if already stopped; otherwise it calls `stopNPCs()` and sets `inProgress = false` (**Running → Stopped**). While **Running**, `move(unit, direction)` is modelled as two **internal transitions** with complementary guards from `destination.isAccessibleTo(unit)`: accessible → `setDirection(); occupy(); collide(); updateObservers()`; not accessible → `setDirection(); updateObservers()`. Calls while Stopped return immediately (`!isInProgress()` — ignored, not a guard). `updateObservers()` may **send** `levelLost()` / `levelWon()` to observers — notifications, **not** stored Level states.
+`Level` stores lifecycle in `inProgress`. The constructor sets `inProgress = false` (initial state **Stopped**). `start()` is ignored if already running (early return — **not** a guard); otherwise it calls `startNPCs()`, sets `inProgress = true`, and `updateObservers()` (**Stopped → Running**). `stop()` is ignored if already stopped; otherwise it calls `stopNPCs()` and sets `inProgress = false` (**Running → Stopped**).
+
+While **Running**, `move(unit, direction)` is two **internal transitions** (Lecture `event [guard] / action`):
+
+1. **`[destination.isAccessibleTo(unit)]`** — order: `unit.setDirection(direction)`; then `unit.occupy(destination)`; then **`collisions.collide(unit, occupant)` once per occupant** in `destination.getOccupants()` (the list is captured before occupy); then `updateObservers()`.
+2. **`[!destination.isAccessibleTo(unit)]`** — `unit.setDirection(direction)`; then `updateObservers()` (no occupy/collide).
+
+Calls while Stopped return immediately (`!isInProgress()` — ignored, not a guard). Diagram shorthand `collisions.collide(...)` means that per-occupant loop, not a single unconditional collision. `updateObservers()` may **send** `levelLost()` / `levelWon()` — notifications, **not** Level states. There is no `entry / updateObservers()` on Running; `updateObservers()` runs only where the code calls it (`start()`, end of `move()`).
 
 ### Evidence table
 
@@ -53,9 +60,13 @@ Java source was not modified. Line numbers below were verified against that ZIP.
 | Event `stop()` / `stopNPCs(); inProgress = false` | `Level` | `stop()` | 216–224 |
 | Ignored `stop()` when already Stopped | `Level` | `stop()` early return | 218–220 |
 | `stopNPCs()` shuts down ghost executors | `Level` | `stopNPCs()` | 244–250 |
-| Internal `move` `[destination.isAccessibleTo(unit)]` / setDirection; occupy; collide; updateObservers | `Level` | `move` + accessible branch | 172–195 (setDirection 182; occupy/collide 186–191; updateObservers 193) |
-| Internal `move` `[!destination.isAccessibleTo(unit)]` / setDirection; updateObservers | `Level` | `move` when not accessible | 182; 186 false → 193 |
 | `move` ignored when Stopped | `Level` | `if (!isInProgress()) return` | 177–179 |
+| Internal `move` always starts with `unit.setDirection(direction)` | `Level` | `move` | 182 |
+| Guard `destination.isAccessibleTo(unit)` | `Level` | `move` | 184–186 |
+| Accessible: snapshot occupants, then `unit.occupy(destination)` | `Level` | `move` | 187–188 |
+| Accessible: `collisions.collide(unit, occupant)` **for each** occupant | `Level` | `move` for-loop | 189–191 |
+| Always after direction (± occupy/collide): `updateObservers()` | `Level` | `move` | 193 |
+| Internal `move` `[!accessible]` / setDirection; updateObservers | `Level` | `move` when guard false | 182; 186 false → 193 |
 | Send `levelLost()` / `levelWon()` | `Level` | `updateObservers()` | 265–276 |
 | Observer contract | `Level.LevelObserver` | `levelWon()` / `levelLost()` | 361–373 |
 
@@ -70,9 +81,9 @@ Java source was not modified. Line numbers below were verified against that ZIP.
 
 Issues found in earlier renders and corrected before final export:
 
-1. Bidirectional transition labels colliding on one arc → switched to vertical layout with opposing left/right arcs.
-2. Over-long curved arrows / excessive whitespace from `left to right` + `up`/`down` routing → removed directional routing hacks; used `top to bottom` with moderate `nodesep`/`ranksep`.
-3. Evidence text crowding the figure → moved detailed evidence into this document; diagrams keep short `event / action` labels only.
+1. Bidirectional transition labels colliding on one arc → opposing arcs / separated start–stop labels.
+2. Overcrowded Running internals → two compartments separated by `----`, one event/guard/action stack each; landscape layout for report width.
+3. `collisions.collide(...)` documented as a **per-occupant loop** (lines 189–191), not a single collide.
 4. Navy palette applied consistently (`#365879` arrows/borders, `#EAF2FA` fills, `#243B53` text, white background).
 
 Final PNG files match the PlantUML sources in this directory (`SM-01-Player.puml` → `SM-01-Player.png`, `SM-02-Level.puml` → `SM-02-Level.png`).
