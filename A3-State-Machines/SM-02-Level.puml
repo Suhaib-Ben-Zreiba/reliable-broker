@@ -1,0 +1,57 @@
+@startuml SM-02-Level
+' SYSC 3020 Assignment 3 — SM-02: Level State Machine
+' States from Level.inProgress (Level.java). Notation: event [guard] / action (Lecture 5).
+' Internal move transitions verified against Level.move() lines 172–195.
+' collisions.collide(...) = for each occupant of the accessible destination (see evidence).
+
+title SM-02 · Level State Machine\n<field: inProgress : boolean>
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontColor #243B53
+skinparam titleFontColor #243B53
+skinparam titleFontSize 14
+skinparam ArrowColor #365879
+skinparam ArrowThickness 1.2
+skinparam ArrowFontColor #243B53
+skinparam ArrowFontSize 11
+skinparam StateBackgroundColor #EAF2FA
+skinparam StateBorderColor #365879
+skinparam StateBorderThickness 1.5
+skinparam StateFontColor #243B53
+skinparam StateFontSize 13
+skinparam StateFontStyle bold
+skinparam StateAttributeFontColor #243B53
+skinparam StateAttributeFontSize 10
+skinparam Padding 14
+skinparam nodesep 75
+skinparam ranksep 100
+
+left to right direction
+
+state "Stopped" as Stopped
+state "Running" as Running
+
+Stopped : inProgress == false
+
+Running : inProgress == true
+Running : ----
+Running : move(unit, direction)
+Running : [destination.isAccessibleTo(unit)] /
+Running : unit.setDirection(direction);
+Running : unit.occupy(destination);
+Running : collisions.collide(...);
+Running : updateObservers()
+Running : ----
+Running : move(unit, direction)
+Running : [!destination.isAccessibleTo(unit)] /
+Running : unit.setDirection(direction);
+Running : updateObservers()
+
+[*] --> Stopped
+
+Stopped --> Running : start()\n/ startNPCs();\ninProgress = true;\nupdateObservers()
+Running --> Stopped : stop()\n/ stopNPCs();\ninProgress = false
+
+@enduml
