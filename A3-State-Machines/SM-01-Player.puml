@@ -1,0 +1,42 @@
+@startuml SM-01-Player
+' SYSC 3020 Assignment 3 — SM-01: Player State Machine
+' States from Player.alive (Player.java). Notation: event [guard] / action (Lecture 5).
+
+title SM-01 · Player State Machine\n<field: alive : boolean>
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontColor #243B53
+skinparam titleFontColor #243B53
+skinparam titleFontSize 14
+skinparam ArrowColor #365879
+skinparam ArrowThickness 1.2
+skinparam ArrowFontColor #243B53
+skinparam ArrowFontSize 11
+skinparam StateBackgroundColor #EAF2FA
+skinparam StateBorderColor #365879
+skinparam StateBorderThickness 1.5
+skinparam StateFontColor #243B53
+skinparam StateFontSize 13
+skinparam StateFontStyle bold
+skinparam StateAttributeFontColor #243B53
+skinparam StateAttributeFontSize 10
+skinparam Padding 6
+skinparam nodesep 55
+skinparam ranksep 45
+
+top to bottom direction
+
+state "Alive" as Alive
+state "Dead" as Dead
+
+Alive : alive == true
+Dead : alive == false
+
+[*] --> Alive
+
+Alive --> Dead : setAlive(false)\n/ deathSprite.restart()
+Dead --> Alive : setAlive(true)\n/ deathSprite.setAnimating(false);\nkiller = null
+
+@enduml
