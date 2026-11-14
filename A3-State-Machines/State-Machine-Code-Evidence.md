@@ -38,7 +38,7 @@ Java source was not modified. Line numbers below were verified against that ZIP.
 
 ### Behaviour summary
 
-`Level` stores lifecycle in `inProgress`. The constructor sets `inProgress = false` (initial state **Stopped**). `start()` is ignored if already running (early return — **not** a guard); otherwise it calls `startNPCs()`, sets `inProgress = true`, and `updateObservers()` (**Stopped → Running**). `stop()` is ignored if already stopped; otherwise it calls `stopNPCs()` and sets `inProgress = false` (**Running → Stopped**). While **Running**, `move(unit, direction)` is modelled as an **internal transition**: if `!isInProgress()` the call returns immediately (ignored in Stopped); otherwise it sets direction, optionally occupies/collides when the destination is accessible, then always calls `updateObservers()`. `updateObservers()` may **send** `levelLost()` / `levelWon()` to observers — these are notifications, **not** stored Level states (assignment / lab guidance).
+`Level` stores lifecycle in `inProgress`. The constructor sets `inProgress = false` (initial state **Stopped**). `start()` is ignored if already running (early return — **not** a guard); otherwise it calls `startNPCs()`, sets `inProgress = true`, and `updateObservers()` (**Stopped → Running**). `stop()` is ignored if already stopped; otherwise it calls `stopNPCs()` and sets `inProgress = false` (**Running → Stopped**). While **Running**, `move(unit, direction)` is modelled as two **internal transitions** with complementary guards from `destination.isAccessibleTo(unit)`: accessible → `setDirection(); occupy(); collide(); updateObservers()`; not accessible → `setDirection(); updateObservers()`. Calls while Stopped return immediately (`!isInProgress()` — ignored, not a guard). `updateObservers()` may **send** `levelLost()` / `levelWon()` to observers — notifications, **not** stored Level states.
 
 ### Evidence table
 
@@ -53,16 +53,15 @@ Java source was not modified. Line numbers below were verified against that ZIP.
 | Event `stop()` / `stopNPCs(); inProgress = false` | `Level` | `stop()` | 216–224 |
 | Ignored `stop()` when already Stopped | `Level` | `stop()` early return | 218–220 |
 | `stopNPCs()` shuts down ghost executors | `Level` | `stopNPCs()` | 244–250 |
-| Internal `move(...)` while Running | `Level` | `move(Unit, Direction)` | 172–195 |
+| Internal `move` `[destination.isAccessibleTo(unit)]` / setDirection; occupy; collide; updateObservers | `Level` | `move` + accessible branch | 172–195 (setDirection 182; occupy/collide 186–191; updateObservers 193) |
+| Internal `move` `[!destination.isAccessibleTo(unit)]` / setDirection; updateObservers | `Level` | `move` when not accessible | 182; 186 false → 193 |
 | `move` ignored when Stopped | `Level` | `if (!isInProgress()) return` | 177–179 |
-| Accessibility check (action condition, not transition guard) | `Level` | `destination.isAccessibleTo(unit)` | 186–192 |
 | Send `levelLost()` / `levelWon()` | `Level` | `updateObservers()` | 265–276 |
 | Observer contract | `Level.LevelObserver` | `levelWon()` / `levelLost()` | 361–373 |
 
 ### Limitations
 
 - Won/Lost are intentionally **not** states of `Level`.
-- Accessibility is a condition inside the `move` action, not a UML guard on Leaving Running.
 - Debugger verification of `Level.stop()` / `start()` is separate and unverified in this package.
 
 ---

@@ -23,9 +23,10 @@ skinparam StateFontSize 13
 skinparam StateFontStyle bold
 skinparam StateAttributeFontColor #243B53
 skinparam StateAttributeFontSize 10
-skinparam Padding 6
-skinparam nodesep 70
-skinparam ranksep 55
+skinparam Padding 8
+skinparam nodesep 80
+skinparam ranksep 60
+skinparam MinClassWidth 280
 
 top to bottom direction
 
@@ -35,7 +36,10 @@ state "Running" as Running
 Stopped : inProgress == false
 
 Running : inProgress == true
-Running : move(unit, direction) / setDirection;\nif accessible: occupy + collide;\nupdateObservers()
+Running : ----
+Running : move(unit, direction)\n[destination.isAccessibleTo(unit)]\n/ setDirection(); occupy(); collide();\nupdateObservers()
+Running : ----
+Running : move(unit, direction)\n[!destination.isAccessibleTo(unit)]\n/ setDirection(); updateObservers()
 
 [*] --> Stopped
 
