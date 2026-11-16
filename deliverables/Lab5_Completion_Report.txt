@@ -1,0 +1,68 @@
+SYSC 3600 Lab 5 — Completion Report
+====================================
+
+Deliverable
+-----------
+Final editable Word report:
+  SYSC3600_Lab5_Report_Adam_Abdelkader_Ibrahim.docx
+
+Source document was edited in place (not rebuilt from scratch). All 15 original
+embedded images were preserved byte-for-byte. All 31 Word equations (OMML)
+remain editable.
+
+
+What changed
+------------
+Writing
+- Shortened and simplified the prose so it reads like a normal student lab write-up.
+- Removed filler / overly polished phrasing while keeping calculations and findings.
+- Fixed typos (e.g. “In The spring force model”).
+- Clarified curve IDs (blue = jumper, yellow = parachute; yellow Fp / blue Fj).
+- Clarified where acceleration, speed, and position appear in the coupled model.
+- Noted that TF numerators/denominators come from the MATLAB workspace vectors.
+
+Formatting
+- Set Times New Roman, 12 pt body text; normal 1" margins.
+- Simplified the title page; kept student/partner/section/date info.
+- Fixed duplicate section numbers in Section 4 (now 4.1–4.6).
+- Removed excess forced page breaks; kept a clean title-page break.
+- Resized figures proportionally; kept captions with figures.
+- Compacted spacing so the report is ~13 pages instead of a stretched layout.
+
+Figures / labels
+- All 15 figures present (Figure 13 = coupled model speed graph).
+- Plot captions include axis units, curve identification, and “Fall 2025”
+  (Figures 3, 4, 7, 8, 9, 12, 13, 14, 15). Original plot images were not altered.
+
+
+Lab checklist status
+--------------------
+1. TF Simulink screenshots + position/speed graphs ........ YES (Figs 1–4)
+2. Eq. 20 in integral form ................................ YES (Section 3.1)
+3. Integral Simulink screenshot(s) ........................ YES (Figs 5–6)
+4. Integral position + speed graphs ....................... YES (Figs 7–9)
+5. Coupled Simulink screenshot + a/v/x identified ......... YES (Fig 10 + text)
+6. Coupled position + speed plots ......................... YES (Figs 12–13)
+7. Spring force plot + how obtained ....................... YES (Figs 11, 15 + text)
+8. Interaction description ................................ YES (Section 4.6)
+9. Advantages/disadvantages of three methods .............. YES (Section 5)
+10. “Fall 2025” on plots .................................. YES (captions)
+Student info / parameters / results preserved ............. YES
+
+
+Genuine unresolved issues
+-------------------------
+1. Transfer Fcn screenshots (Figs 1–2) still display generic num(s)/den(s).
+   Coefficients are set from workspace vectors (num_p, num_j, den_x, den_v),
+   as stated in the text. Images were not regenerated.
+
+2. Some gain blocks in the integral/coupled screenshots still show “-K-”
+   instead of numeric values. The lab asks for visible values inside gains;
+   fixing that would require new Simulink screenshots (not allowed here).
+
+3. Figure 9 (integral speeds) uses a 0–60 y-axis scale, so the ~6.24 m/s
+   terminal speeds sit near the bottom of the plot. The original image was
+   kept unchanged; the caption correctly labels it as speed.
+
+
+No invented verification or missing results were added.
