@@ -37,6 +37,8 @@ interface "Level.LevelObserver" as LevelObserver <<interface>> {
 }
 
 abstract class Game {
+  + start() : void
+  + stop() : void
   + levelWon() : void
   + levelLost() : void
   + {abstract} getLevel() : Level
@@ -47,7 +49,8 @@ class SinglePlayerGame {
 }
 
 ' Level (subject) maintains a set of observers
-Level "1" --> "*" LevelObserver : observers
+' 1 at Level end (owner of the set); 0..* at LevelObserver end (Set may be empty)
+Level "1" --> "0..*" LevelObserver : observers
 
 ' Game realizes the nested observer interface
 Game ..|> LevelObserver
@@ -56,7 +59,8 @@ Game ..|> LevelObserver
 SinglePlayerGame --|> Game
 
 ' Named association for field SinglePlayerGame.level
-SinglePlayerGame "1" --> "1" Level : level
+' Only 1 at Level end is supported (private final Level level); no reverse multiplicity
+SinglePlayerGame --> "1" Level : level
 
 ' Lecture-8-style placement:
 ' Level upper-left, Level.LevelObserver upper-right,
