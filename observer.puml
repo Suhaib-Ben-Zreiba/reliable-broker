@@ -1,0 +1,75 @@
+@startuml observer
+' Observer pattern as implemented in the JPacman starter code.
+' Verified against Level.java, Game.java and SinglePlayerGame.java only.
+' Layout follows Lecture 8 slide 22 as closely as the real code allows.
+
+skinparam shadowing false
+skinparam backgroundColor white
+skinparam classBackgroundColor white
+skinparam classBorderColor black
+skinparam classFontColor black
+skinparam classFontSize 13
+skinparam classAttributeFontSize 12
+skinparam classAttributeIconSize 0
+skinparam arrowColor black
+skinparam arrowFontColor black
+skinparam arrowFontSize 12
+skinparam stereotypeFontColor black
+skinparam stereotypeFontSize 11
+skinparam defaultFontName Helvetica
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 60
+skinparam padding 6
+
+hide circle
+hide empty attributes
+
+class Level {
+  - observers : Set<LevelObserver>
+  + addObserver(observer : LevelObserver) : void
+  + removeObserver(observer : LevelObserver) : void
+  - updateObservers() : void
+}
+
+interface "Level.LevelObserver" as LevelObserver <<interface>> {
+  + levelWon() : void
+  + levelLost() : void
+}
+
+abstract class Game {
+  + start() : void
+  + stop() : void
+  + levelWon() : void
+  + levelLost() : void
+  + {abstract} getLevel() : Level
+}
+
+class SinglePlayerGame {
+  - level : Level
+  + getLevel() : Level
+}
+
+' Navigable association for Level.observers (Set, may be empty → 0..*)
+Level --> "0..*" LevelObserver
+
+' Game realizes the nested observer interface
+Game ..|> LevelObserver
+
+' Game.start() calls getLevel().addObserver(this) — dependency, no label
+Game ..> Level
+
+' SinglePlayerGame specializes Game
+SinglePlayerGame --|> Game
+
+' Navigable association for SinglePlayerGame.level (final, non-null → 1)
+SinglePlayerGame --> "1" Level
+
+' Lecture-8-style placement:
+' Level upper-left, Level.LevelObserver upper-right,
+' Game below Level.LevelObserver, SinglePlayerGame below Game.
+Level -[hidden]right- LevelObserver
+LevelObserver -[hidden]down- Game
+Game -[hidden]down- SinglePlayerGame
+
+@enduml
