@@ -26,6 +26,7 @@ hide circle
 hide empty attributes
 
 class Level {
+  - observers : Set<LevelObserver>
   + addObserver(observer : LevelObserver) : void
   + removeObserver(observer : LevelObserver) : void
   - updateObservers() : void
@@ -45,26 +46,24 @@ abstract class Game {
 }
 
 class SinglePlayerGame {
+  - level : Level
   + getLevel() : Level
 }
 
-' Level (subject) maintains a set of observers
-' 0..* at LevelObserver end only (Set may be empty; no Level-end multiplicity —
-' code does not restrict an observer to a single Level)
-Level --> "0..*" LevelObserver : observers
+' Navigable association for Level.observers (Set, may be empty → 0..*)
+Level --> "0..*" LevelObserver
 
 ' Game realizes the nested observer interface
 Game ..|> LevelObserver
 
-' Game.start() registers itself: getLevel().addObserver(this)
-Game ..> Level : registers
+' Game.start() calls getLevel().addObserver(this) — dependency, no label
+Game ..> Level
 
 ' SinglePlayerGame specializes Game
 SinglePlayerGame --|> Game
 
-' Named association for field SinglePlayerGame.level
-' Only 1 at Level end is supported (private final Level level); no reverse multiplicity
-SinglePlayerGame --> "1" Level : level
+' Navigable association for SinglePlayerGame.level (final, non-null → 1)
+SinglePlayerGame --> "1" Level
 
 ' Lecture-8-style placement:
 ' Level upper-left, Level.LevelObserver upper-right,
