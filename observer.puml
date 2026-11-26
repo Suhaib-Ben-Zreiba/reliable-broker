@@ -49,11 +49,15 @@ class SinglePlayerGame {
 }
 
 ' Level (subject) maintains a set of observers
-' 1 at Level end (owner of the set); 0..* at LevelObserver end (Set may be empty)
-Level "1" --> "0..*" LevelObserver : observers
+' 0..* at LevelObserver end only (Set may be empty; no Level-end multiplicity —
+' code does not restrict an observer to a single Level)
+Level --> "0..*" LevelObserver : observers
 
 ' Game realizes the nested observer interface
 Game ..|> LevelObserver
+
+' Game.start() registers itself: getLevel().addObserver(this)
+Game ..> Level : registers
 
 ' SinglePlayerGame specializes Game
 SinglePlayerGame --|> Game
